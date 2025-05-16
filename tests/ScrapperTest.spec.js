@@ -1,60 +1,154 @@
-const {test, expect} = require('@playwright/test');
+import { test, expect } from "@playwright/test";
 
-test('Scrapper for lowest price',async ({browser})=> {
- const context = await browser.newContext();
- const page  = await context.newPage();
+test.only("test", async ({ browser }) => {
+  const { checkInDay, checkOutDay } = getCheckInOutDays();
 
-  // Go to Trivago
-  await page.goto('https://www.trivago.in/');
+  const ratingLabel = await rating(5);
 
-  // Fill destination
-  await page.getByTestId('search-form-destination').fill('Goa');
-  await page.getByRole('option', { name: /Goa Region/i }).click();
+  //handle indian page for headless browser
+  const context = await browser.newContext({
+    locale: "en-IN",
+    timezoneId: "Asia/Kolkata",
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+    extraHTTPHeaders: {
+      "Accept-Language": "en-IN,en;q=0.9",
+    },
+  });
 
-  // Select check-in and check-out
-  await page.getByTestId('valid-calendar-day-2025-06-02').click();
-  await page.getByTestId('valid-calendar-day-2025-06-07').click();
+  await context.addCookies([
+    {
+      name: "lang",
+      value: "en-gb",
+      domain: ".booking.com",
+      path: "/",
+    },
+    {
+      name: "selected_currency",
+      value: "INR",
+      domain: ".booking.com",
+      path: "/",
+    },
+  ]);
 
-  // Set 2 adults
-  await page.getByTestId('adults-amount').fill('2');
+  const page = await context.newPage();
+  await page.goto(
+    "https://www.booking.com/index.en-gb.html?selected_currency=INR&lang=en-gb"
+  );
 
-  // Add 1 infant (age 1)
-  await page.getByTestId('children-amount-plus-button').click();
-  await page.getByTestId('child-age-select').selectOption('1');
-  await page.getByTestId('guest-selector-apply').click();
+  await page.waitForTimeout(3000);
+  await acceptCookiesIfVisible(page);
+  // Dismiss sign-in modal if visible
+  await closeGeniusPopupIfVisible(page);
 
-  // Sort by price
-  await page.getByRole('button', { name: /Sort by/i }).click();
-  await page.getByRole('radio', { name: 'Price only' }).check();
+  await page.getByRole("combobox", { name: "Where are you going?" }).click();
+  await page
+    .getByRole("combobox", { name: "Where are you going?" })
+    .fill("jaipur");
+  await page
+    .getByRole("button", { name: "Jaipur Rajasthan, India", exact: true })
+    .click();
+  await page.waitForTimeout(3000);
 
-  // Apply 5-star filter
-  await page.getByRole('button', { name: /Filters/i }).click();
-  await page.getByRole('button', { name: /Hotel rating/i }).click();
-  await page.getByTestId('5-star-hotels-filter').click();
-  await page.getByTestId('filters-popover-apply-button').click();
+  await page
+    .getByRole("gridcell", { name: checkInDay })
+    .first()
+    .waitFor({ state: "visible" });
+  await page.getByRole("gridcell", { name: checkInDay }).first().click();
 
-  // Wait for listings to load
-  await page.waitForTimeout(5000); // Wait for results to appear
+  await page
+    .getByRole("gridcell", { name: checkOutDay })
+    .nth(1)
+    .waitFor({ state: "visible" });
+  await page.getByRole("gridcell", { name: checkOutDay }).nth(1).click();
 
-  // Extract the first hotel price
-  const price = await page.locator('[data-testid="recommended-price"]').first().innerText();
-  const name = await page.locator('[data-testid="item-name"]').first().innerText();
+  await page.getByTestId("occupancy-config").click();
+  await page
+    .locator("div")
+    .filter({ hasText: /^0$/ })
+    .locator("button")
+    .nth(1)
+    .click();
+  await page.getByLabel("Age of child at check-out").selectOption("1");
+  await page.getByRole("button", { name: "Done" }).click();
 
-  console.log(`Hotel: ${name}`);
-  console.log(`Lowest 5-night Price: ${price}`);
+  await page.locator("button[type='submit']").click();
 
-  //click on View deal to get website URL
-  const dealLink = page.locator('[data-testid="champion-deal"]').nth(0);
-  const[newpage] = await Promise.all(
-    [
-    context.waitForEvent('page'),//listen for any new page
-    dealLink.click(),//new page is opened
-  ])
+  await page.waitForTimeout(5000);
+  // Dismiss sign-in modal if visible
+  await closeGeniusPopupIfVisible(page);
 
-  await newpage.waitForTimeout(5000); 
-  const currentUrl = newpage.url();
-  console.log('Hotel Booking URL:', currentUrl);
+  //find the neproperty rating text on the page
+  const propertyrating = page.locator("text='Property rating'").first();
+  //scroll until the button is visible
+  await propertyrating.scrollIntoViewIfNeeded();
 
+  const starCheckbox = page
+    .getByRole("checkbox", { name: new RegExp(ratingLabel, "i") })
+    .last();
+  await expect(starCheckbox).toBeVisible();
+  await starCheckbox.scrollIntoViewIfNeeded();
+  await starCheckbox.click();
+
+  // Sort by Price (lowest first)
+  await page.getByTestId("sorters-dropdown-trigger").click();
+  await page.getByRole("option", { name: "Price (lowest first)" }).click();
+
+  // Print first hotel name and its price
+  const hotelName = await page
+    .getByRole("link", { name: /Opens in new/ })
+    .first()
+    .textContent();
+  const price = await page
+    .locator('span[data-testid="price-and-discounted-price"]')
+    .first()
+    .textContent();
+
+  console.log("Hotel Name:", hotelName?.trim());
+  console.log("Price:", price?.trim());
 });
 
+async function acceptCookiesIfVisible(page) {
+  const cookieButton = page.locator("button", {
+    hasText: /accept|agree|ok|got it/i,
+  });
 
+  if (await cookieButton.first().isVisible()) {
+    await cookieButton.first().click();
+  }
+}
+
+function getCheckInOutDays() {
+  const today = new Date();
+  const checkInDate = new Date(today);
+  checkInDate.setDate(today.getDate() + 3);
+  const checkOutDate = new Date(today);
+  checkOutDate.setDate(today.getDate() + 8);
+
+  const formatDate = (date) => String(date.getDate());
+
+  const checkInDay = formatDate(checkInDate);
+  const checkOutDay = formatDate(checkOutDate);
+
+  return { checkInDay, checkOutDay };
+}
+
+async function rating(ratingValue) {
+  // Handle singular/plural label
+  const ratingLabel = ratingValue === 1 ? "1 star" : `${ratingValue} stars`;
+  return ratingLabel;
+}
+
+async function closeGeniusPopupIfVisible(page) {
+  try {
+    const dismissBtn = page.getByRole("button", {
+      name: "Dismiss sign in information.",
+    });
+    if (await dismissBtn.isVisible()) {
+      await dismissBtn.click();
+      console.log("Popup is closed");
+    }
+  } catch (error) {
+    console.log("Genius popup not found or already dismissed.");
+  }
+}
